@@ -1,19 +1,35 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime as dt
+from typing import Any, List
+
 import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-# Настройка логирования
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-log_file_path = os.path.join(project_root, "logs/utils.log")
 
+# Получаем абсолютный путь до текущей директории
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Создаем путь до файла логов относительно текущей директории
+rel_log_file_path = os.path.join(current_dir, "../logs/utils.log")
+abs_log_file_path = os.path.abspath(rel_log_file_path)
+
+# Создаем путь до файла user_settings.json относительно текущей директории.
+# В файл храниться словарь с требуемыми валютами и акциями
+rel_json_path = os.path.join(current_dir, "../user_settings.json")
+abs_json_path = os.path.abspath(rel_json_path)
+
+# Создаем путь до файла operations.xlsx относительно текущей директории
+rel_xlsx_path = os.path.join(current_dir, "../data/operations.xlsx")
+abs_xlsx_path = os.path.abspath(rel_xlsx_path)
+
+# Добавляем логгер, который записывает логи в файл.
 logger = logging.getLogger("utils")
-logger.setLevel(logging.DEBUG)
-file_handler = logging.FileHandler(log_file_path, "w", encoding="utf-8")
-file_formatter = logging.Formatter("%(asctime)s - %(funcName)s %(levelname)s: %(message)s")
+logger.setLevel(logging.INFO)
+file_handler = logging.FileHandler(abs_log_file_path, "w", encoding="utf-8")
+file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s: %(message)s")
 file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
 
@@ -21,116 +37,184 @@ load_dotenv()
 API_KEY_FOR_CURRENCY = os.getenv("API_KEY_FOR_CURRENCY")
 API_KEY_FOR_STOCK = os.getenv("API_KEY_FOR_STOCK")
 
+# Создаем json-файл со списком акций и валют
 
-def get_data_from_excel(file_path: str) -> pd.DataFrame:
-    """Получение информации из файла Excel."""
-    try:
-        operations = pd.read_excel(file_path)
-        logger.info("Успешное выполнение")
-        return operations  # Возвращаем DataFrame
-    except (ValueError, FileNotFoundError) as ex:
-        logger.error(f"Произошла ошибка: {ex}")
-        return pd.DataFrame()  # Возвращаем пустой DataFrame вместо списка
+currencies_stocks_dict = {"user_currencies": ["USD", "EUR"], "user_stocks": ["AAPL", "AMZN", "GOOGL", "MSFT", "TSLA"]}
+
+with open(abs_json_path, "w") as file:
+    json.dump(currencies_stocks_dict, file)
 
 
-def operations_by_date(operations: pd.DataFrame, date: str) -> pd.DataFrame:
-    """Возвращает операции за текущий месяц."""
-    first_day_month = datetime.strptime(date, "%Y-%m-%d %H:%M:%S").replace(day=1)
-    operations["Дата операции"] = pd.to_datetime(operations["Дата операции"], format="%d.%m.%Y %H:%M:%S")
-    return operations[
-        (operations["Дата операции"] >= first_day_month) &
-        (operations["Дата операции"] <= datetime.strptime(date, "%Y-%m-%d %H:%M:%S"))
-    ]
-
-
-def user_greeting_by_hours() -> str:
-    """Формирует приветствие на основе текущего времени."""
-    logger.info("Приветствуем пользователя")
-    current_hour = datetime.now().hour
-    greetings = {
-        (0, 6): "Доброй ночи",
-        (6, 12): "Доброе утро",
-        (12, 18): "Добрый день",
-        (18, 24): "Добрый вечер"
-    }
-    for (start, end), greeting in greetings.items():
-        if start <= current_hour < end:
-            return greeting
-
-
-def card_list(operations: pd.DataFrame) -> list:
-    """Возвращает список о картах пользователя."""
-    grouped_operations = operations.groupby("Номер карты")["Сумма операции с округлением"].sum().reset_index()
-    grouped_operations["Cashback"] = (grouped_operations["Сумма операции с округлением"] // 100).astype(int)
-    grouped_operations["LastFourDigits"] = grouped_operations["Номер карты"].astype(str).str[-4:]
-    result = grouped_operations[["LastFourDigits", "Сумма операции с округлением", "Cashback"]]
-    result.columns = ["last_digits", "total_spent", "cashback"]
-    return result.to_dict(orient="records")
-
-
-def top_five_transactions(operations: pd.DataFrame) -> list:
-    """Получение списка 5 крупнейших по сумме платежа транзакций."""
-    top_transactions = operations.nlargest(5, "Сумма операции с округлением")
-    return [
-        {
-            "date": transaction["Дата операции"],
-            "amount": transaction["Сумма операции с округлением"],
-            "category": transaction["Категория"],
-            "description": transaction["Описание"],
-        }
-        for transaction in top_transactions.to_dict(orient="records")
-    ]
-
-
-def currency_rates(file_json: str) -> list:
-    """Получение списка курсов валют."""
-    logger.info("Поиск курсов валют")
-    try:
-        with open(file_json, encoding="utf-8") as file:
-            user_currencies = json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError) as ex:
-        logger.error(f"Ошибка при чтении файла с валютами: {ex}")
-        return []
-
-    result_currencies = []
-    for currency in user_currencies.get("user_currencies", []):
-        response = requests.get(
-            f"https://v6.exchangerate-api.com/v6/1bb27ce69aa2781d3e315dd4/latest/USD={API_KEY_FOR_CURRENCY}"
-            f"&base_currency={currency}&currencies=RUB"
-        )
-        if response.status_code == 200:
-            rate = round(response.json()["data"]["RUB"]["value"], 2)
-            result_currencies.append({"currency": currency, "rate": rate})
-        else:
-            logger.error(f"Ошибка при получении курса для {currency}: {response.status_code}")
-    return result_currencies
-
-
-def stock_prices(file_json: str) -> list:
-    """Возвращает стоимость акций из S&P 500."""
-    logger.info("Поиск основных акций из S&P 500")
-    url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={API_KEY_FOR_STOCK}"
-    result = []
+def import_from_excel(input_xlsx_file: str) -> pd.DataFrame:
+    """Функция принимает на вход путь до файла xlsx и возвращает DataFrame"""
 
     try:
-        with open(file_json, encoding="utf-8") as file:
-            user_shares = json.load(file)
-            user_share = ",".join(user_shares.get("user_stocks", []))
-            querystring = {"symbols": user_share}
-            response = requests.get(url, params=querystring)
-            response.raise_for_status()  # Проверка на ошибки HTTP
-            for data in response.json().get("data", []):
-                result.append({"stock": data["symbol"], "price": data["close"]})
-    except (FileNotFoundError, json.JSONDecodeError) as ex:
-        logger.error(f"Ошибка при чтении файла с акциями: {ex}")
-    except requests.RequestException as ex:
-        logger.error(f"Ошибка при запросе к API: {ex}")
-
-    return result
+        input_df = pd.read_excel(input_xlsx_file)
+        logger.info("Данные из файла xlsx импортированы")
+        return input_df
+    except FileNotFoundError:
+        logger.warning("Файл не найден: %s", input_xlsx_file)
+    except ValueError:
+        logger.warning("Импортируемый список пуст или отсутствует.")
+    except Exception as e:
+        logger.warning("Произошла ошибка при импорте данных: %s", e)
 
 
-def convert_timestamps_to_strings(dataframe: pd.DataFrame) -> pd.DataFrame:
-    """Преобразует все столбцы с типом "datetime64[ns]" в строки."""
-    for col in dataframe.select_dtypes(include=["datetime64[ns]"]).columns:
-        dataframe[col] = dataframe[col].dt.strftime("%Y-%m-%d %H:%M:%S")
-    return dataframe
+df = import_from_excel(abs_xlsx_path)
+
+
+def get_currency_rates(json_file: str) -> List[dict[str, Any]]:
+    """Функция принимает на вход json-файл и возвращает список словарей с курсами требуемых валют.
+    Курс валюты функция импортирует через API"""
+    logger.info("Курсы валют получены")
+
+    with open(json_file, "r", encoding="utf-8") as doc_file:
+        currencies_stocks_list = json.load(doc_file)
+        currency_rates_list_dicts = []
+
+        # Получаем курсы валют относительно USD
+        url = f"https://v6.exchangerate-api.com/v6/{API_KEY_FOR_CURRENCY}/latest/USD"
+        response = requests.get(url)
+        result = response.json()
+
+        for currency in currencies_stocks_list["user_currencies"]:
+            currency_rates_dict = {
+                "currency": currency,
+                "rate": result["conversion_rates"].get(currency)
+            }
+            currency_rates_list_dicts.append(currency_rates_dict)
+
+        return currency_rates_list_dicts
+
+
+def get_stock_prices(json_file: str) -> List[dict[str, Any]]:
+    """Функция принимает на вход json-файл и возвращает список словарей с курсами требуемых акций.
+    Стоимости акций функция импортирует через API"""
+    logger.info("Стоимости акций получены")
+
+    with open(json_file, "r", encoding="utf-8") as doc_file:
+        currencies_stocks_list = json.load(doc_file)
+        stock_prices_list_dicts = []
+
+        for stock in currencies_stocks_list["user_stocks"]:
+            url = (f"https://api.marketstack.com/v1/eod?access_key={API_KEY_FOR_STOCK}&symbols={stock}&date="
+                   f"{input_datetime}")
+            response = requests.get(url)
+            result = response.json()
+
+            # Проверяем наличие данных в ответе
+            if "data" in result and len(result["data"]) > 0:
+                stock_prices_dict = {
+                    "stock": stock,
+                    "price": result["data"][0].get("close")  # Получаем цену закрытия
+                }
+                stock_prices_list_dicts.append(stock_prices_dict)
+            else:
+                logger.warning("Нет данных для акции: %s", stock)
+
+        return stock_prices_list_dicts
+
+
+input_datetime = "2021-12-29 22:32:24"
+
+
+def greetings(input_daytime: str) -> str:
+    """Функция принимает строку с датой и возвращает требуемое приветствие"""
+    date_update = dt.strptime(input_daytime, "%Y-%m-%d %H:%M:%S")
+    time = date_update.strftime("%H:%M:%S")
+
+    if "05:00:00" <= time <= "12:00:00":
+        return "Доброе утро"
+    if "12:00:00" <= time <= "18:00:00":
+        return "Добрый день"
+    if "18:00:00" <= time <= "23:00:00":
+        return "Добрый вечер"
+    else:
+        return "Доброй ночи"
+
+
+def start_month(input_monthtime: str) -> dt:
+    """Функция принимает на вход строку с датой и возвращает начало месяца"""
+    date_update = dt.strptime(input_monthtime, "%Y-%m-%d %H:%M:%S")
+    start = date_update.replace(day=1, hour=0, minute=0, second=0)
+    return start
+
+
+begin_month = start_month(input_datetime)
+
+
+def filter_date(df_test: str) -> pd.DataFrame:
+    """Функция создает DataFrame по заданному периоду времени"""
+    dataframe = pd.read_excel(df_test)
+    df_date = pd.to_datetime(df["Дата операции"], format="%d.%m.%Y %H:%M:%S")
+    filtered_df_to_date = dataframe[(begin_month <= df_date) & (df_date <= input_datetime)]
+    return filtered_df_to_date
+
+
+filtered_to_date = filter_date(abs_xlsx_path)
+
+
+def cards_info(input_df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Функция принимает на вход путь до файла xlsx и возвращает DataFrame"""
+
+    df_output = []
+    try:
+        logger.info("Данные из DataFrame обработаны")
+
+        # Группировка по номеру карты и суммирование
+        cards = input_df.groupby("Номер карты")
+        cards_prices = cards["Сумма операции с округлением"].sum()
+        df_test = cards_prices.to_dict()
+
+        for card, total in df_test.items():
+            df_result = {
+                "last_digits": card,
+                "total_spent": total,
+                "cashback": round(total / 100, 2)
+            }
+            df_output.append(df_result)
+
+        return df_output
+
+    except KeyError as e:
+        logger.warning("Ошибка: отсутствует необходимый столбец в DataFrame: %s", e)
+    except Exception as e:
+        logger.warning("Произошла ошибка при обработке данных: %s", e)
+
+    return [{}]  # Возвращаем список с пустым словарем в случае ошибки
+
+
+def top_transactions(input_df: pd.DataFrame) -> list[dict[str, Any]] | None:
+    """Функция принимает на вход DataFrame и возвращает ТОП-5 транзакций по сумме платежа"""
+    df_output_sort = []
+    try:
+        logger.info("Данные из DataFrame обработаны")
+
+        # Сортировка DataFrame по сумме платежа
+        sorted_df = input_df.sort_values("Сумма платежа", ascending=False)
+        sort_five = sorted_df.iloc[0:5]
+
+        df_sort_dict = sort_five.to_dict("records")
+        for i in df_sort_dict:
+            df_sort_result = {
+                "date": i["Дата платежа"],
+                "amount": i["Сумма платежа"],
+                "category": i["Категория"],
+                "description": i["Описание"]
+            }
+            df_output_sort.append(df_sort_result)
+
+        return df_output_sort
+
+    except KeyError as e:
+        logger.warning("Ошибка: отсутствует необходимый столбец в DataFrame: %s", e)
+    except Exception as e:
+        logger.warning("Произошла ошибка при обработке данных: %s", e)
+
+    return None  # Возвращаем None в случае ошибки
+
+
+def format_date(input_format_date: str) -> str:
+    """Функция форматирует дату"""
+    date_update = dt.strptime(input_format_date, "%d.%m.%Y")
+    return date_update.strftime("%Y-%m-%d")

@@ -125,9 +125,9 @@ def greetings(input_daytime: str) -> str:
 
     if "05:00:00" <= time <= "12:00:00":
         return "Доброе утро"
-    if "12:00:00" <= time <= "18:00:00":
+    elif "12:00:00" <= time <= "18:00:00":
         return "Добрый день"
-    if "18:00:00" <= time <= "23:00:00":
+    elif "18:00:00" <= time <= "23:00:00":
         return "Добрый вечер"
     else:
         return "Доброй ночи"
